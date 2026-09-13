@@ -1,0 +1,16 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": ".NET Core Launch (WPF Panel App)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/windows_algic_ime/bin/Debug/net8.0-windows/windows_algic_ime.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}/windows_algic_ime",
+            "stopAtEntry": false,
+            "console": "internalConsole"
+        }
+    ]
+}
