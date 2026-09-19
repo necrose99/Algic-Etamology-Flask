@@ -1,5 +1,6 @@
 /**
  * kilahkwaani_v2.js
+ * https://mc.miamioh.edu/ilda-myaamia/dictionary/entries/6183  Mia: kilahkwaani	en:Speech
  * =================
  * Font loading, GLAS/UCAS script rendering, and speech synthesis
  * for the Algic Etymology Applet (algic_ety_applet_v3.py).
@@ -847,4 +848,18 @@ if (typeof window !== 'undefined') {
     // Delay patch to allow applet JS to define its functions
     setTimeout(patchApplet, 100);
   });
+}
+// Add inside the Kilahkwaani speech synthesis method framework wrapper
+speakWord: function(word, langCode, genderProfile) {
+    // 1. First-Order Priority Check: Inspect local true recording server manifest
+    if (this.audioManifest && this.audioManifest[word]) {
+        console.log("-> Real recording matched in audio vault node. Streaming: " + this.audioManifest[word]);
+        let audioPlayer = new Audio(this.audioManifest[word]);
+        audioPlayer.play();
+        return; // Halt process; true voice has priority execution
+    }
+
+    // 2. Fallback: Execute standard best-effort IPA speech synthesis utterance
+    console.log("-> No real audio match found. Proceeding with best-effort synthetic fallback engine...");
+    this.executeFallbackTTS(word, langCode, genderProfile);
 }
