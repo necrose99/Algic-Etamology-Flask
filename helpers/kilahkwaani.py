@@ -60,6 +60,18 @@ def enrich_from_tmx(db_path, tmx_file):
     conn.close()
 
 # --- 3. Production Manifest Generation ---
+# Insert this query adjustment inside your manifest generation block
+cur.execute("SELECT form, lang, ipa, voice_gender, audio_url FROM entries")
+# Then map inside the iteration loop:
+manifest[clean_key] = {
+    "orthography": form,
+    "lang": row['lang'],
+    "ipa": row['ipa'] or "",
+    "voice": row['voice_gender'] or "neutral",
+    "audio_url": row['audio_url'] or "", # Pipes real MP3 locations straight to JavaScript!
+    "has_recording": bool(row['audio_url'])
+}
+
 def generate_web_manifest(db_path, output_json):
     manifest = {}
     conn = sqlite3.connect(db_path)
