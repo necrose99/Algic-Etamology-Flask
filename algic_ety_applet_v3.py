@@ -53,6 +53,33 @@ import requests
 from bs4 import BeautifulSoup
 from flask import (Flask, Response, g, jsonify, render_template_string,
                    request, send_file, session)
+# Add this execution block directly beneath the imports in algic_ety_applet_v3.py
+import sys
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__) + "/helpers"))
+import plugins
+
+# Add this endpoint inside your create_app() factory block:
+@app.route("/admin/import/universal", methods=["POST"])
+@require_role("admin", _db_path)
+def admin_import_universal():
+    """
+    Universal ingest router that handles format parsing (XSLT or Python) 
+    via detached background plugins.
+    """
+    file = request.files.get("file")
+    fmt = request.form.get("format")       # e.g., 'extended-tmx', 'xdxf', 'lift2tmx'
+    lang = request.form.get("lang", "mia")
+    
+    if not file or not fmt:
+        return jsonify({"error": "Missing input file stream or format signature identifier"}), 400
+        
+    try:
+        # Hand off task handling directly to the PluginManager instance
+        manager = plugins.PluginManager(db_path, xslt_dir)
+        result = manager.process_universal_import(fmt, file.read(), lang)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # ── Language registry ────────────────────────────────────────────────────────
 ALGIC: Dict[str, Dict] = {
@@ -940,6 +967,12 @@ main{padding:1.4rem 2rem;display:flex;flex-direction:column;gap:1.4rem;overflow-
 </header>
 <div class="layout">
 <aside>
+  <!-- Audiological control insertion hook -->
+  {{ audio_panel_inc | safe }}
+  
+  <!-- Existing API Key panels continue below -->
+  <div class="auth-panel">
+
 
   <!-- Auth -->
   <div class="auth-panel">
