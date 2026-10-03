@@ -1143,4 +1143,22 @@ if __name__ == "__main__":
 
     print(f"🌐  Open: http://{args.host}:{args.port}")
     create_app(args.db, args.xslt).run(host=args.host, port=args.port, debug=args.debug)
->>>>>>> temp-detached
+    
+# Add this inside your app setup block alongside the other administration routes:
+@app.route("/admin/analytics/drift", methods=["POST"])
+@require_role("admin", _db_path)
+def admin_analytics_drift():
+    """
+    Evaluates incoming records against current database history to flag 
+    lexical or morphological shifts before executing a raw SQL merge.
+    """
+    from helpers.drift_plugin import DriftAnalyzerPlugin
+    
+    lang = request.form.get("lang", "mia")
+    incoming_data = request.json.get("records", []) # Parsed from incoming TMX stream
+    
+    analyzer = DriftAnalyzerPlugin(_db_path)
+    baseline_df = analyzer.load_baseline_from_db(lang=lang)
+    
+    analysis_results = analyzer.calculate_dump_drift(baseline_df, incoming_data)
+    return jsonify(analysis_results)
