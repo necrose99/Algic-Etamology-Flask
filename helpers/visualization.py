@@ -1,135 +1,150 @@
 # helpers/visualization.py
-import os
 import io
-import sqlite3
+import os
+import base64
 import numpy as np
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Point
 import matplotlib
-matplotlib.use('Agg')  # Headless server-safe rendering pipeline
+matplotlib.use('Agg')  # Headless server-safe rendering mode
 import matplotlib.pyplot as plt
 
-DB_FILE = "myaamia-corpus.db"
-CACHE_IMAGE_PATH = "static/cache_dashboard.png"
+# Import the language definition mappings from your local file
+from languages import ALGIC_LANGUAGE_REGISTRY
 
-# WALS-aligned structural group mapping
+CACHE_IMAGE_PATH = "static/cache_algic_dashboard.png"
+
 GROUP_COLORS = {
-    "Central": "#1abc9c",    # Teal (mia, kic, pot, sac, oji, cre)
-    "Eastern": "#2980b9",    # Blue (mic, abe)
-    "Plains":  "#e67e22",    # Orange (bft, arp, chy)
-    "Western": "#e74c3c",    # Red (yur, wiy - CA outliers)
-    "Remnant": "#7f8c8d",    # Gray (bue, pim, qyp)
-    "Proto":   "#9b59b6"     # Purple (Ancestral root base)
+    "Central": "#1abc9c",    # Teal
+    "Eastern": "#2980b9",    # Blue
+    "Plains":  "#e67e22",    # Orange
+    "Western": "#e74c3c",    # Red (California Outliers)
+    "Remnant": "#7f8c8d",    # Gray
+    "Ancestral": "#9b59b6"  # Purple
 }
 
-# Baseline geographical centers for pre-contact coordinates
+# Geographic centers representing pre-contact distribution hubs
 BASELINE_COORDS = {
-    "mia": {"lon": -90.00, "lat": 40.00, "group": "Central"}, # Illinois / WALS ill
-    "kic": {"lon": -88.50, "lat": 39.50, "group": "Central"}, 
-    "cre": {"lon": -105.0, "lat": 55.00, "group": "Central"},
-    "yur": {"lon": -124.0, "lat": 41.20, "group": "Western"}, # California Outlier
-    "wiy": {"lon": -124.2, "lat": 40.60, "group": "Western"}  # California Outlier
+    "alg-x-proto": {"lon": -120.0, "lat": 46.0}, # Columbia Plateau Urheimat Model
+    "yur": {"lon": -124.0, "lat": 41.2},
+    "wiy": {"lon": -124.2, "lat": 40.6},
+    "bft": {"lon": -113.0, "lat": 50.0},
+    "arp": {"lon": -105.5, "lat": 40.0},
+    "ats": {"lon": -109.5, "lat": 48.0},
+    "chy": {"lon": -104.5, "lat": 39.0},
+    "cre": {"lon": -105.0, "lat": 55.0},
+    "csw": {"lon": -92.0,  "lat": 54.0},
+    "crj": {"lon": -74.0,  "lat": 51.0},
+    "atj": {"lon": -73.5,  "lat": 48.0},
+    "men": {"lon": -88.5,  "lat": 45.0},
+    "pot": {"lon": -86.5,  "lat": 42.5},
+    "oji": {"lon": -90.0,  "lat": 47.0},
+    "otw": {"lon": -82.0,  "lat": 45.0},
+    "ciw": {"lon": -93.0,  "lat": 46.5},
+    "mia": {"lon": -87.5,  "lat": 40.0},
+    "sac": {"lon": -92.5,  "lat": 42.0},
+    "kic": {"lon": -88.5,  "lat": 39.5},
+    "sjw": {"lon": -84.0,  "lat": 38.0},
+    "mic": {"lon": -65.0,  "lat": 47.0},
+    "abe": {"lon": -72.5,  "lat": 44.5},
+    "aaq": {"lon": -69.0,  "lat": 45.0},
+    "mal": {"lon": -67.5,  "lat": 45.5},
+    "moo": {"lon": -72.0,  "lat": 41.5},
+    "mua": {"lon": -74.5,  "lat": 41.0},
+    "unm": {"lon": -75.0,  "lat": 40.0},
+    "bue": {"lon": -56.0,  "lat": 49.0},
+    "etc": {"lon": -67.0,  "lat": 45.0},
+    "xlo": {"lon": -72.0,  "lat": 42.5},
+    "xlb": {"lon": -73.0,  "lat": 43.0},
+    "crr": {"lon": -79.0,  "lat": 34.5},
+    "pim": {"lon": -76.5,  "lat": 37.5},
+    "qyp": {"lon": -72.8,  "lat": 41.3}
 }
 
-def calculate_levenshtein_drift(word, root):
-    """Normalized phonetic edit distance: 0.0 (identical) to 1.0 (max mutation)"""
-    if not word or not root: return 1.0
-    w1, w2 = word.lower().strip("*"), root.lower().strip("*")
-    size_x, size_y = len(w1) + 1, len(w2) + 1
-    matrix = np.zeros((size_x, size_y))
-    for x in range(size_x): matrix[x, 0] = x
-    for y in range(size_y): matrix[0, y] = y
-    
-    for x in range(1, size_x):
-        for y in range(1, size_y):
-            if w1[x-1] == w2[y-1]:
-                matrix[x, y] = matrix[x-1, y-1]
-            else:
-                matrix[x, y] = min(matrix[x-1, y]+1, matrix[x, y-1]+1, matrix[x-1, y-1]+1)
-    
-    return round(matrix[size_x-1, size_y-1] / max(len(w1), len(w2)), 3)
-
-def calculate_geo_drift_km(lon, lat, homeland_lon=-120.0, homeland_lat=46.0):
-    """Approximates displacement from Proto-Algic Urheimat (Columbia Plateau)"""
-    dx = (lon - homeland_lon) * 82.0 
-    dy = (lat - homeland_lat) * 111.0
-    return round(np.sqrt(dx**2 + dy**2), 1)
-
-def update_and_render_cache():
-    """Extracts SQLite logs, overlays GeoPandas surfaces, and writes PNG cache."""
-    if not os.path.exists(DB_FILE):
-        return
-        
-    with sqlite3.connect(DB_FILE) as conn:
-        df = pd.read_sql_query("SELECT lang, form, proto_form, source_type FROM entries", conn)
-        
-    if df.empty:
-        return
-
-    # Map database languages to spatial baseline profiles
-    processed = []
-    for _, row in df.iterrows():
-        lang = row['lang']
-        if lang in BASELINE_COORDS:
-            coords = BASELINE_COORDS[lang]
-            etym_drift = calculate_levenshtein_drift(row['form'], row['proto_form'])
-            geo_drift = calculate_geo_drift_km(coords['lon'], coords['lat'])
-            processed.append({
-                "lang": lang,
-                "form": row['form'],
-                "lon": coords['lon'],
-                "lat": coords['lat'],
-                "group": coords['group'],
-                "etym_drift": etym_drift,
-                "geo_drift_km": geo_drift
+def generate_spatial_registry_dataframe():
+    """Merges your catalog definitions with geographical baseline vectors."""
+    records = []
+    for iso_code, meta in ALGIC_LANGUAGE_REGISTRY.items():
+        if iso_code in BASELINE_COORDS:
+            coords = BASELINE_COORDS[iso_code]
+            records.append({
+                "iso": iso_code,
+                "name": meta["name"],
+                "group": meta["group"],
+                "subfamily": meta["subfamily"],
+                "lon": coords["lon"],
+                "lat": coords["lat"]
             })
-            
-    if not processed:
-        return
-        
-    plot_df = pd.DataFrame(processed).drop_duplicates(subset=['lang', 'form'])
-    geometry = [Point(xy) for xy in zip(plot_df['lon'], plot_df['lat'])]
-    gdf = gpd.GeoDataFrame(plot_df, geometry=geometry, crs="EPSG:4326")
+    return pd.DataFrame(records)
 
-    # Generate side-by-side visualization maps
-    fig, (ax_map, ax_drift) = plt.subplots(1, 2, figsize=(16, 7))
+def render_registry_map_element():
+    """Transforms dataframe records into a map element string."""
+    df = generate_spatial_registry_dataframe()
+    if df.empty:
+        return '<div class="alert alert-danger">No aligned coordinate markers found.</div>'
+        
+    # Build geometry metrics using target coordinate layers
+    geometry = [Point(xy) for xy in zip(df["lon"], df["lat"])]
+    geo_df = gpd.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")
     
-    for group_name, group_df in gdf.groupby('group'):
-        color = GROUP_COLORS.get(group_name, "#333333")
-        marker = 's' if group_name == 'Western' else 'o'
+    # Safe buffering: project to equal-area projection, buffer by 75km, drop back to 4326
+    geo_df = geo_df.to_crs("EPSG:3857")
+    geo_df["geometry"] = geo_df.geometry.buffer(75000)
+    geo_df = geo_df.to_crs("EPSG:4326")
+    
+    # Load underlying structural geographic surface map layers
+    try:
+        world = gpd.read_file(gpd.datasets.get_path('naturalearth_lowres'))
+    except (AttributeError, ValueError):
+        # Clean CDN backup layer parsing strategy
+        world = gpd.read_file("https://cloudfront.net")
         
-        # Panel 1: Canada / CONUS Geoplot projection
-        group_df.plot(ax=ax_map, color=color, marker=marker, markersize=140, 
-                      edgecolor='k', label=f"{group_name} Branch", zorder=3)
+    north_america = world[world['name'].isin(['United States of America', 'Canada'])]
+    
+    fig, ax = plt.subplots(figsize=(13, 8))
+    north_america.to_crs("EPSG:4326").plot(ax=ax, color='#eaeaea', edgecolor='white')
+    
+    # Render language group polygons based on custom dictionary mappings
+    for group_name, group_data in geo_df.groupby("group"):
+        color = GROUP_COLORS.get(group_name, "#7f8c8d")
+        group_data.plot(
+            ax=ax, 
+            color=color, 
+            alpha=0.65, 
+            edgecolor="black", 
+            linewidth=1.2, 
+            label=group_name
+        )
         
-        # Panel 2: Etymological Change/Drift Grid
-        ax_drift.scatter(group_df['etym_drift'], group_df['geo_drift_km'], 
-                         color=color, marker=marker, s=140, edgecolors='k', zorder=3)
-
-    # Label maps with codes
-    for _, row in gdf.drop_duplicates(subset=['lang']).iterrows():
-        ax_map.annotate(row['lang'].upper(), (row['geometry'].x, row['geometry'].y), 
-                        textcoords="offset points", xytext=(0,12), ha='center', fontweight='bold', fontsize=10)
+    # Annotate spatial points dynamically using centroids
+    for idx, row in geo_df.iterrows():
+        ax.annotate(
+            text=row['name'],
+            xy=(row['geometry'].centroid.x, row['geometry'].centroid.y),
+            xytext=(2, 2),
+            textcoords="offset points",
+            fontsize=7,
+            weight='bold',
+            alpha=0.85
+        )
         
-        ax_drift.annotate(row['lang'].upper(), (row['etym_drift'], row['geo_drift_km']), 
-                          textcoords="offset points", xytext=(0,12), ha='center', fontsize=9)
-
-    # Window frames perfectly matching Canada down to California boundaries
-    ax_map.set_xlim(-130, -60)   
-    ax_map.set_ylim(32, 60)      
-    ax_map.set_title("Algic Geographic Coordinate Distribution", fontsize=12, fontweight='bold')
-    ax_map.set_xlabel("Longitude")
-    ax_map.set_ylabel("Latitude")
-    ax_map.grid(True, linestyle=':', alpha=0.6)
-    ax_map.legend(loc='lower left')
-
-    ax_drift.set_title("Linguistic Evolution Map (Lexical mutation vs Distance)", fontsize=12, fontweight='bold')
-    ax_drift.set_xlabel("Phonetic Drift Scale (Normalized Edit Distance)")
-    ax_drift.set_ylabel("Calculated Displacement Vector from Homeland (km)")
-    ax_drift.grid(True, linestyle=':', alpha=0.6)
-
-    plt.tight_layout()
+    plt.title("Algic Language Family Structural Distribution & Sub-Family Matrix", fontsize=12, pad=12)
+    plt.grid(True, linestyle="--", alpha=0.25)
+    
+    # Anchor coordinates to continental view limits
+    ax.set_xlim([-130, -50])
+    ax.set_ylim([30, 60])
+    
+    # Save a copy to the filesystem cache folder
     os.makedirs(os.path.dirname(CACHE_IMAGE_PATH), exist_ok=True)
-    plt.savefig(CACHE_IMAGE_PATH, format='png', dpi=140)
+    plt.savefig(CACHE_IMAGE_PATH, format='png', bbox_inches='tight', dpi=150)
+    
+    # Encode plot straight to image byte stream buffer
+    img_buffer = io.BytesIO()
+    plt.savefig(img_buffer, format='png', bbox_inches='tight', dpi=150)
+    img_buffer.seek(0)
     plt.close(fig)
+    
+    encoded_img = base64.b64encode(img_buffer.getvalue()).decode('utf-8')
+    return f'<img src="data:image/png;base64,{encoded_img}" class="img-fluid algic-map-frame" alt="Algic Registry Map">'

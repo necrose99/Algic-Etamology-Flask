@@ -1,91 +1,83 @@
 # helpers/plugins.py
-import sys
 import os
-import sqlite3
-import uuid
-from pathlib import Path
+import sys
+import importlib
+import logging
+from typing import Dict, Any, List
+from flask import Blueprint, Flask
 
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
-from transmog import TransmogEngine
-import visualization
-
-# Base mapping for the structural linguistics suite
-XSLT_REGISTRY = {
-    "xdxf2tmx": "xdxf2tmx.xsl", "xdxf2xliff": "xdxf2xliff.xsl",
-    "xliff2tmx": "xliff2tmx.xsl", "xliff2xdxf": "xliff2xdxf.xsl",
-    "xliff2lift": "xliff-to-lift.xsl", "lemon2lift": "Lemon2LIFT.xslt",
-    "lift2lemon": "LIFT2lemon.xslt", "eaf2lift": "eaf-to-lift.xsl",
-    "eaf2tei": "eaf-to-tei.xsl", "eaf2tmx": "eaf-to-tmx.xsl",
-    "eaf2xliff": "eaf-to-xliff.xsl", "flex2xdxf": "flex2xdxf.xsl",
-    "lemon2tei": "lemon2tei.xsl", "lift2tmx": "lift-to-tmx.xsl",
-    "lift2xliff": "lift-to-xliff.xsl", "olif2xdxf": "olif2xdxf.xsl",
-    "tmx2xdxf": "tmx2xdxf.xsl", "tmx2eaf": "tmx-to-eaf.xsl",
-    "tmx2lift": "tmx-to-lift.xsl", "tmx2xliff": "tmx-to-xliff.xsl"
-}
+try:
+    from ollama_plugin import AlgicOllamaPlugin
+    OLLAMA_AVAILABLE = True
+except ImportError:
+    OLLAMA_AVAILABLE = False
 
 class PluginManager:
-    def __init__(self, db_path: str, xslt_dir: str):
+    def __init__(self, db_path: str, xslt_dir: str, enable_ai: bool = True):
         self.db_path = db_path
         self.xslt_dir = xslt_dir
-
-    def run_xslt_transform(self, mapping_key: str, xml_bytes: bytes, src_lang: str) -> bytes:
-        """Runs the compiled stylesheet transformation engine using SaxonChe."""
-        if mapping_key not in XSLT_REGISTRY:
-            raise ValueError(f"Mapping signature unlisted: {mapping_key}")
-            
-        sheet_file = XSLT_REGISTRY[mapping_key]
-        sheet_path = Path(self.xslt_dir) / sheet_file
+        self.loaded_features: Dict[str, Any] = {}
         
-        from saxonche import PySaxonProcessor
-        with PySaxonProcessor(license=False) as proc:
-            xslt = proc.new_xslt30_processor()
-            exe = xslt.compile_stylesheet(stylesheet_file=str(sheet_path))
-            exe.set_parameter("source-lang", proc.make_string_value(src_lang))
-            
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as tf:
-                tf.write(xml_bytes)
-                tf_name = tf.name
-            result = exe.transform_to_string(source_file=tf_name)
-            os.unlink(tf_name)
-            return result.encode("utf-8") if isinstance(result, str) else result
-
-    def process_universal_import(self, format_type: str, file_bytes: bytes, src_lang: str) -> dict:
-        """Dispatches data types to the appropriate Python parser or XSLT routine."""
-        fmt = format_type.lower().strip()
-        records = []
-
-        # 1. Route files to Python or XSLT parsers
-        if fmt == "extended-tmx" or (fmt == "tmx" and b"prop" in file_bytes):
-            records = TransmogEngine.parse_extended_tmx(file_bytes)
-        elif fmt == "xdxf":
-            records = TransmogEngine.parse_xdxf(file_bytes)
-        elif fmt in ("ttl", "lemon-ttl"):
-            records = TransmogEngine.parse_ontolex_lemon_ttl(file_bytes)
-        elif fmt in XSLT_REGISTRY:
-            # Re-parse via dynamic sheet execution loops
-            transformed_xml = self.run_xslt_transform(fmt, file_bytes, src_lang)
-            if "lift" in fmt:
-                return {"status": "transformed", "output_format": "lift", "preview": transformed_xml[:300].decode()}
-            return {"status": "xslt transformation applied"}
+        # 1. Initialize core AI processing module
+        self.ai_enabled = enable_ai and OLLAMA_AVAILABLE
+        if self.ai_enabled:
+            self.ai_agent = AlgicOllamaPlugin(db_path=db_path)
+            self.loaded_features["ollama"] = self.ai_agent
         else:
-            return {"error": f"No pipeline registered for format signature: {format_type}"}
+            self.ai_agent = None
+            logging.warning("Ollama plugin hook initialization bypassed.")
 
-        # 2. Persist extracted metadata records into SQLite rows
-        inserted = 0
+        # 2. Establish dynamic file system discovery loop
+        self._discover_and_load_addons()
+
+    def _discover_and_load_addons(self):
+        """
+        Scans helpers directory for files ending in '-plugin.py' or '_plugin.py'
+        and dynamically instantiates them into the engine runtime context.
+        """
+        helpers_dir = os.path.dirname(os.path.abspath(__file__))
+        if helpers_dir not in sys.path:
+            sys.path.insert(0, helpers_dir)
+
+        for filename in os.listdir(helpers_dir):
+            if (filename.endswith("_plugin.py") or filename.endswith("-plugin.py")) and filename != "ollama_plugin.py":
+                module_name = filename.rsplit(".", 1)[0].replace("-", "_")
+                try:
+                    # Dynamic runtime import loop
+                    mod = importlib.import_module(module_name)
+                    
+                    # Look for a standard initialization hook within the target module
+                    if hasattr(mod, "initialize_plugin"):
+                        plugin_instance = mod.initialize_plugin(self.db_path, self.xslt_dir)
+                        self.loaded_features[module_name] = plugin_instance
+                        logging.info(f"Successfully mounted addon architecture: {module_name}")
+                except Exception as e:
+                    logging.error(f"Failed loading runtime module hook [{module_name}]: {str(e)}")
+
+    def mount_blueprints_to_app(self, app: Flask):
+        """
+        Discovers any Flask Blueprints declared inside custom plugin engines 
+        and registers them directly into the primary application context.
+        """
+        for feature_name, feature_instance in self.loaded_features.items():
+            if hasattr(feature_instance, "blueprint") and isinstance(feature_instance.blueprint, Blueprint):
+                app.register_blueprint(feature_instance.blueprint)
+                logging.info(f"Registered routing injection matrix from: {feature_name}")
+
+    def execute_sandbox_discovery(self, query_string: str) -> dict:
+        """Screening Gate: Runs isolated auto-discovery queries against semantic sets."""
+        clean_sql = query_string.strip()
+        destructive_keywords = ["drop", "truncate", "alter", "grant", "revoke", "vacuum"]
+        if any(kw in clean_sql.lower() for kw in destructive_keywords):
+            raise PermissionError("Unsafe structural operation intercepted by plugin gate.")
+            
+        allowed_scopes = ["embeddings", "tmx_clones", "rdf_triples", "ipa_phonetics"]
+        if not any(table in clean_sql.lower() for table in allowed_scopes):
+            raise PermissionError("Access Denied: LLM query targeted raw primary data fields.")
+
+        import sqlite3
         with sqlite3.connect(self.db_path) as conn:
-            for r in records:
-                eid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{src_lang}:{r['form']}"))
-                cursor = conn.execute("SELECT 1 FROM entries WHERE id=?", (eid,))
-                if not cursor.fetchone():
-                    conn.execute("""
-                        INSERT INTO entries (id, lang, form, gloss_en, proto_form, source_url, source_type, confidence)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 0.8)
-                    """, (eid, src_lang, r['form'], r['gloss_en'], r['proto_form'], r['source_url'], r['source_type']))
-                    inserted += 1
+            cursor = conn.cursor()
+            cursor.execute(clean_sql)
             conn.commit()
-
-        if inserted > 0:
-            visualization.update_and_render_cache()
-
-        return {"total_seen": len(records), "new_inserted": inserted}
+            return {"status": "success", "rows_affected": cursor.rowcount}
