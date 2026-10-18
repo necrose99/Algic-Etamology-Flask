@@ -32,3 +32,21 @@ class LexiconCitation(db.Model):
     
     page_or_node = db.Column(db.String(50), nullable=True) # e.g., 'p. 142', 'Node #134'
     context_snippet = db.Column(db.Text, nullable=True) # Verbatim string from historical text
+# database/models.py (Append to your models file)
+from database.models import db
+from flask_login import UserMixin
+from werkzeug.security import generate_password_hash, check_password_hash
+
+class AdminUser(db.Model, UserMixin):
+    """User table model managing secure access control for administrative tasks."""
+    __tablename__ = 'admin_users'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(50), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
