@@ -221,3 +221,27 @@ def init_auth(app):
         if 'SSO_NAMEID' in session:
             return saml_adapter.user(user_id)
         # Re-hydrate the current user's session from secure cookies
+# Admin/login.py (Excerpt update inside your universal_login view function)
+from flask import request, g
+from Admin.bg_admin import BackgroundAdminMonitor
+
+# Inside your Blueprint registration or view file context...
+@auth_bp.route('/login', methods=['GET', 'POST'])
+def universal_login():
+    if request.method == 'POST':
+        username = request.form.get('username').strip()
+        password = request.form.get('password')
+        
+        if username == SecurityRecoveryConfig.EMERGENCY_ADMIN_USER:
+            if check_password_hash(SecurityRecoveryConfig.EMERGENCY_HASHED_KEY, password):
+                # Trigger the background monitor
+                bg_monitor = BackgroundAdminMonitor(auth_bp.get_app() if hasattr(auth_bp, 'get_app') else None)
+                operator_ip = request.remote_addr or "127.0.0.1"
+                
+                # Run the notification pipeline in the background
+                bg_monitor.trigger_break_glass_alert(operator_ip=operator_ip)
+                
+                # Log the user into their session context
+                emergency_user = AuthenticatedLinguist(username, "System Break-Glass Operator", "admin@uni.edu", role="admin")
+                login_user(emergency_user)
+                return redirect(url_for('admin.index'))
