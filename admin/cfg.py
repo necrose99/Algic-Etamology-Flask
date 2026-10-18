@@ -19,3 +19,19 @@ def update_db_config():
         })
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+# ./Admin/cfg.py
+import os
+# Dynamic import directly from your repository's layout configuration path
+from helpers.languages import ALGIC_LANGUAGE_REGISTRY
+
+class AppConfig:
+    DB_TYPE = os.environ.get("DB_TYPE", "sqlite")
+    DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///algic_lexicon.db")
+    
+    # PERFORMANCE HOT-CACHE SETTINGS (Redis RAM Disk configuration)
+    USE_REDIS_CACHE = os.environ.get("USE_REDIS_CACHE", "true").lower() == "true"
+    REDIS_URI = os.environ.get("REDIS_URI", "redis://localhost:6379/0")
+    CACHE_TTL_SECONDS = 3600  # 1 hour performance window
+    
+    # Dynamically inject the complete repository mapping structure
+    RAW_REGISTRY = ALGIC_LANGUAGE_REGISTRY
