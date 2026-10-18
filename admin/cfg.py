@@ -1,3 +1,15 @@
+# ./Admin/cfg.py (Append to your existing configuration)
+import os
+
+class AuthConfig:
+    # Security parameters
+    SECRET_KEY = os.environ.get("SECRET_KEY", "super-secure-algic-token-key")
+    
+    # Simple default credentials for initial bootstrap setup
+    ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
+    ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "secure-algonquian-pass")
+
+
 from flask import Blueprint, request, jsonify
 from helpers.db_factory import get_db_wrangler
 
